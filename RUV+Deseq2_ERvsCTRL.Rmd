@@ -23,7 +23,7 @@ library(apeglm)
 library(pheatmap)
 ```
 
-#ER vs CTRL
+# ER vs CTRL
 
 Counts from the samples:
 
@@ -201,7 +201,7 @@ DESeq2::plotMA(ape, ylim=c(-10,10), cex=.5, alpha = .05, xlab = "mean of normali
 
 
 
-#Annotation of the results
+# Annotation of the results
 
 For the annotation we need to use the same file that was used for the mapping in STAR step. In this case, we already got the mapped counts, so we can use the previous table that we generated
 
@@ -212,11 +212,11 @@ ape_df <- data.frame(ape)
 
 
 ```{r}
-##With the following command we will call to the first column Gene
+#With the following command we will call to the first column Gene
 ape_df <- ape_df %>% 
   rownames_to_column(var = "Gene")
 
-##With this one we will join both data frames by Gene
+#With this one we will join both data frames by Gene
 ape_df <- left_join(ape_df,
           rawcounts_genename,
           by = "Gene") %>% 
@@ -230,7 +230,7 @@ To save it:
 write_tsv(as.data.frame(ape_df),"C:/Users/HR Sergio/Desktop/Postdoc/Ricardo/RNA-seq/ER_vs_DMSO_BATCHCORRECTION.tsv")
 ```
 
-#Arrange DE genes according to their adjusted p-value
+# Arrange DE genes according to their adjusted p-value
 
 We are going to establish a threshold of an adjusted p-value lower than 0.05
 
