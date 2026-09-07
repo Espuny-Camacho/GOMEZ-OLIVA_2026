@@ -1,0 +1,244 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-05-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+library(edgeR)
+library(RColorBrewer)
+library(rtracklayer)
+library(Rsamtools)
+library(GenomicFeatures)
+library(AnnotationDbi)
+library(GenomicRanges)
+library(RUVSeq)
+library(apeglm)
+library(pheatmap)
+```
+
+#ER vs CTRL
+
+Counts from the samples:
+
+```{r}
+library(readxl)
+rawcounts <- read_excel("C:/Users/HR Sergio/Desktop/Postdoc/Ricardo/RNA-seq/salmon.merged.gene_counts.xlsx")
+#create a reference table to be used later
+rawcounts_genename <- as.data.frame(rawcounts$Gene, rawcounts$GeneName) 
+rawcounts_genename %>% as.data.frame() %>% 
+  rownames_to_column(var ="Gene") -> rawcounts_genename
+colnames(rawcounts_genename) <- c("Gene","GeneName")
+#conversion of ID Gene column to row
+rawcounts %>% as.data.frame() %>% 
+  column_to_rownames(var ="GeneName") -> rawcounts
+#Delete Gene column at the end
+rawcounts <- rawcounts[,-16]
+#Delete samples we are not interested in
+rawcounts <- rawcounts[,-c(6,7,8,9,10)]
+colnames(rawcounts) <- c("DMSO_1","DMSO_2","DMSO_3","DMSO_4","DMSO_5", "ER_1", "ER_2","ER_3","ER_4", "ER_5")
+dim(rawcounts)
+class(rawcounts$DMSO_1)
+```
+
+# Filtering and exploratory data analysis
+
+Here, we perform a minimal pre-filtering to keep only rows that have 2 reads in at least two samples for each gene
+
+```{r}
+filtered <- apply(rawcounts, 1, function(x) length(x[x>=2])>=2) %>% 
+  rawcounts[.,]
+dim(filtered)
+#convert everything to integer
+filtered$DMSO_1 <- as.integer(filtered$DMSO_1)
+filtered$DMSO_2 <- as.integer(filtered$DMSO_2)
+filtered$DMSO_3 <- as.integer(filtered$DMSO_3)
+filtered$DMSO_4 <- as.integer(filtered$DMSO_4)
+filtered$DMSO_5 <- as.integer(filtered$DMSO_5)
+filtered$ER_1 <- as.integer(filtered$ER_1)
+filtered$ER_2 <- as.integer(filtered$ER_2)
+filtered$ER_3 <- as.integer(filtered$ER_3)
+filtered$ER_4 <- as.integer(filtered$ER_4)
+filtered$ER_5 <- as.integer(filtered$ER_5)
+```
+
+We keep 24157 genes
+
+# SeqExpressionSet from EDAseq - to make use of the plotting and normalizatin functionality
+
+
+```{r EDA}
+# prepare dataset
+x <- as.factor(c("DMSO","DMSO","DMSO","DMSO","DMSO", "ER", "ER","ER","ER", "ER"))
+set <- newSeqExpressionSet(as.matrix(filtered), phenoData = data.frame(x, row.names=colnames(filtered)))
+set
+info.data <- data.frame(x)
+rownames(info.data) <- c("DMSO_1","DMSO_2","DMSO_3","DMSO_4","DMSO_5", "ER_1", "ER_2","ER_3","ER_4", "ER_5")
+```
+
+# empirical control genes "in silico"
+
+To estimate the factors of unwanted variation, we need a set of negative control genes, i.e., genes that can be assumed not to be influenced by the covariates of interest. If no genes are known a priori not to be influenced by the covariates of interest, one can obtain a set of “in-silico empirical” negative controls, e.g., least significantly DE genes based on a first-pass DE analysis performed prior to RUVg normalization.
+
+```{r}
+design <- model.matrix(~x, data=pData(set))
+y <- DGEList(counts=counts(set), group=x) # from EdgeR,creates a DGEList object from a table of counts 
+y <- calcNormFactors(y, method="upperquartile") # we can choose TMM, RLE, and upperquartile
+y <- estimateGLMCommonDisp(y, design) # Estimates common negative binomial dispersion parameter 
+y <- estimateGLMTagwiseDisp(y, design)
+fit <- glmFit(y, design) # Fit a negative binomial generalized log-linear model to the read counts for each gene
+lrt <- glmLRT(fit, coef=2)
+top <- topTags(lrt, n=nrow(set))$table
+empirical <- rownames(set)[which(!(rownames(set) %in% rownames(top)[1:5000]))]
+```
+
+# RUVg
+
+```{r RUVg}
+set2 <- RUVg(set, empirical, k=1)
+pData(set2)
+plotRLE(set2, outline=FALSE, ylim=c(-4, 4), col=colors[x])
+plotPCA(set2, col=colors[x], cex=1.2)
+```
+
+## Better PCA
+```{r}
+# modified from the EDAseq source code
+# input object: normalized counts using upper quartile normalization
+# change group names and number in the function!!
+betterPCA <- function(object, k=2, labels=TRUE, isLog=FALSE) {
+  if(!isLog) {
+    Y <- apply(log(object+1), 1, function(y) scale(y, center=TRUE, scale=FALSE))
+    } else {
+      Y <- apply(object, 1, function(y) scale(y, center=TRUE, scale=FALSE))
+      }
+  s <- svd(Y)
+  percent <- s$d^2/sum(s$d^2)*100
+  labs <- sapply(seq_along(percent), function(i) {
+    paste("PC ", i, " (", round(percent[i], 2), "%)", sep="")
+    })
+  
+  if(k>ncol(object)) {
+    stop("The number of PCs must be less than the number of samples.")
+    }
+  if(k<2) {
+    stop("The number of PCs must be at least 2.")
+    } else if (k==2) {
+      x <-  as.factor(c("DMSO","DMSO","DMSO","DMSO","DMSO", "ER", "ER","ER","ER", "ER"))
+      ggplot( data = as.data.frame(s$u), mapping = aes(x=V1, y=V2, color = x)) +
+        geom_jitter(cex=4) +
+        theme(axis.title.x=element_blank()) +
+        expand_limits(y=0) +
+        ylab(labs[2]) +
+        xlab(labs[1]) +
+        theme_bw() + 
+        theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+        theme(legend.title=element_blank())
+    }
+      
+}
+
+betterPCA(normCounts(set))
+betterPCA(normCounts(set2))
+
+# get the PCA data
+Y <- apply(log(normCounts(set2)+1), 1, function(y) scale(y, center=TRUE, scale=FALSE)) # normCounts(set2): after quartile normalization
+s <- svd(Y)
+percent <- s$d^2/sum(s$d^2)*100
+labs <- sapply(seq_along(percent), function(i) {
+  paste("PC ", i, " (", round(percent[i], 2), "%)", sep="")
+  })
+
+barplot(s$d^2/sum(s$d^2))
+```
+
+# Differential expression analysis with DESeq2
+
+```{r formula}
+# !! rownames(colData) and colnames(countData) MUST be in SAME order before construct DEseq object
+colnames(counts(set2)) == rownames(pData(set2))
+
+dds <- DESeqDataSetFromMatrix(countData = counts(set2), colData = pData(set2), design = ~ W_1 + x)
+dds$x <- factor(dds$x, levels = c("DMSO", "ER"))
+```
+
+
+```{r}
+dds <- DESeq(dds) # use DESeq for normalization
+res <- results(dds)
+res
+```
+
+How many adjusted p-values were less than 0.05?
+
+```{r}
+sum(res$padj < 0.05, na.rm = TRUE)
+```
+
+#Log fold change shrinkage for visualization and ranking
+
+```{r}
+resultsNames(dds)
+```
+
+With apeglm:
+
+```{r}
+ape <- lfcShrink(dds = dds, coef = 3, type = "apeglm")
+sum(ape$padj < 0.05, na.rm = TRUE)
+```
+
+```{r}
+DESeq2::plotMA(ape, ylim=c(-10,10), cex=.5, alpha = .05, xlab = "mean of normalized counts for all the samples", ylab= "log2 fold change of ER / DMSO")
+```
+
+
+
+#Annotation of the results
+
+For the annotation we need to use the same file that was used for the mapping in STAR step. In this case, we already got the mapped counts, so we can use the previous table that we generated
+
+```{r}
+#We will need to make every result a data frame. 
+ape_df <- data.frame(ape)
+```
+
+
+```{r}
+##With the following command we will call to the first column Gene
+ape_df <- ape_df %>% 
+  rownames_to_column(var = "Gene")
+
+##With this one we will join both data frames by Gene
+ape_df <- left_join(ape_df,
+          rawcounts_genename,
+          by = "Gene") %>% 
+  distinct(GeneName, .keep_all = TRUE)
+```
+
+
+To save it:
+
+```{r}
+write_tsv(as.data.frame(ape_df),"C:/Users/HR Sergio/Desktop/Postdoc/Ricardo/RNA-seq/ER_vs_DMSO_BATCHCORRECTION.tsv")
+```
+
+#Arrange DE genes according to their adjusted p-value
+
+We are going to establish a threshold of an adjusted p-value lower than 0.05
+
+```{r}
+subset(ape_df, padj < 0.05) -> sig_genes_ER_vs_DMSO_ape
+#we order in ascendent order
+sig_genes_ER_vs_DMSO_ape <- sig_genes_ER_vs_DMSO_ape[order(sig_genes_ER_vs_DMSO_ape$padj),]
+sig_genes_ER_vs_DMSO_ape
+#This is for IPA with tab separation. 
+write_tsv(as.data.frame(sig_genes_ER_vs_DMSO_ape),"C:/Users/HR Sergio/Desktop/Postdoc/Ricardo/RNA-seq/sig_genes_ER_vs_DMSO_ape.tsv")
+```
