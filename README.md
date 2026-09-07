@@ -3,6 +3,7 @@
 This repository contains 1 file that includes the RNA-seq analysis including day 21 hCOs: 5 CONTROL (DMSO) and 5 ER272 treated samples.
 
 The RNA-seq analysis includes:
+
 -PCA plot
 
 -Batch correction using RUVSeq
